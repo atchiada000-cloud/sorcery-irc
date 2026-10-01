@@ -30,7 +30,7 @@ class IrcService : Service() {
         Notification.Builder(this, CHANNEL_CONNECTION)
             .setSmallIcon(R.drawable.ic_notify)
             .setContentTitle("Sorcery")
-            .setContentText("Connected to SorceryNet")
+            .setContentText("Connected to IRC")
             .setContentIntent(openApp(this, null))
             .setOngoing(true)
             .build()

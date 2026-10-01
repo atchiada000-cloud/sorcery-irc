@@ -129,7 +129,9 @@ private val COMMANDS = listOf(
     Cmd("/ms READ ", "Read a note by number", "Services"),
     Cmd("/ns INFO ", "Look up a registered nick", "Services"),
     Cmd("/cs INFO #", "Look up a registered channel", "Services"),
-    Cmd("/reconnect", "Reconnect to SorceryNet", "Connection"),
+    Cmd("/networks", "Switch to another IRC network", "Connection"),
+    Cmd("/server ", "Connect to any server: host[:port]", "Connection"),
+    Cmd("/reconnect", "Reconnect to this network", "Connection"),
     Cmd("/clear", "Clear this window", "Connection"),
     Cmd("/quit", "Leave SorceryNet", "Connection"),
     Cmd("/help", "Show help in this window", "Connection"),
@@ -186,11 +188,14 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun NickScreen() {
     val context = LocalContext.current
     var nick by rememberSaveable { mutableStateOf(Client.nick) }
     var error by remember { mutableStateOf("") }
+    var picking by remember { mutableStateOf(false) }
+    val net = Client.network
     fun go() {
         val n = nick.trim()
         if (NICK_RE.matches(n)) {
@@ -204,7 +209,18 @@ private fun NickScreen() {
                 .background(Palette.panel, RoundedCornerShape(16.dp)).padding(28.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("☾ SorceryNet", fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = Palette.yellow)
+            Text("☾ Sorcery", fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = Palette.yellow)
+            Row(
+                Modifier.fillMaxWidth().background(Palette.surface, RoundedCornerShape(10.dp))
+                    .combinedClickable(onClick = { picking = true }).padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(net.name, color = Palette.fg, fontWeight = FontWeight.SemiBold)
+                    Text(net.description, color = Palette.dim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Text("Change", color = Palette.blue, fontSize = 13.sp)
+            }
             Text(
                 "Pick a nick for this session. Any nick you like — if it's taken or registered, " +
                     "you'll be shown how to switch.",
@@ -223,7 +239,52 @@ private fun NickScreen() {
             )
             if (error.isNotEmpty()) Text(error, color = Palette.red, fontSize = 13.sp)
             Button(onClick = { go() }, modifier = Modifier.fillMaxWidth()) { Text("Connect") }
-            Text("irc.sorcery.net · port 6697 · encrypted", color = Palette.dim, fontSize = 12.sp)
+            Text("${net.host} · port ${net.port} · " + if (net.tls) "encrypted" else "not encrypted",
+                color = if (net.tls) Palette.dim else Palette.orange, fontSize = 12.sp)
+        }
+    }
+    if (picking) {
+        NetworkSheet(current = net, onDismiss = { picking = false }, onPick = {
+            Client.selectNetwork(it)
+            picking = false
+        })
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+private fun NetworkSheet(current: Network, onDismiss: () -> Unit, onPick: (Network) -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Palette.panel) {
+        Text("IRC networks", Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            color = Palette.yellow, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        Text("All checked and working on 1 Oct 2026. User counts are from that day.",
+            Modifier.padding(horizontal = 20.dp), color = Palette.dim, fontSize = 12.sp)
+        LazyColumn(contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp)) {
+            NETWORKS.groupBy { it.tls }.toSortedMap(compareByDescending { it }).forEach { (tls, nets) ->
+                item(key = "h-$tls") {
+                    Text(if (tls) "ENCRYPTED" else "CLASSIC · NOT ENCRYPTED",
+                        Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp),
+                        color = if (tls) Palette.dim else Palette.orange, fontSize = 11.sp, letterSpacing = 1.5.sp)
+                }
+                items(nets, key = { it.host }) { n ->
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .background(if (n.host == current.host) Palette.surface else Color.Transparent)
+                            .combinedClickable(onClick = { onPick(n) })
+                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(n.name, color = if (n.host == current.host) Palette.yellow else Palette.fg,
+                                fontWeight = FontWeight.SemiBold)
+                            Text(n.description, color = Palette.dim, fontSize = 13.sp)
+                        }
+                        n.users?.let {
+                            Text("%,d".format(it), color = Palette.cyan, style = Mono.copy(fontSize = 13.sp))
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -327,6 +388,13 @@ private fun ChatScreen() {
         }
     }
 
+    if (Client.showNetworks) {
+        NetworkSheet(current = Client.network, onDismiss = { Client.showNetworks = false }, onPick = {
+            Client.showNetworks = false
+            if (it.host != Client.network.host) Client.switchNetwork(it)
+        })
+    }
+
     if (showCommands) {
         ModalBottomSheet(onDismissRequest = { showCommands = false }, containerColor = Palette.panel) {
             CommandList(onPick = { cmd ->
@@ -357,7 +425,7 @@ private fun ChatScreen() {
 @Composable
 private fun WindowList(onPick: () -> Unit) {
     Column(Modifier.padding(vertical = 12.dp)) {
-        Text("☾ SorceryNet", Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+        Text("☾ ${Client.network.name}", Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             color = Palette.yellow, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
         Text(
             if (Client.registered) "${Client.nick} · connected" else if (Client.connecting) "connecting…" else "offline",
@@ -398,6 +466,7 @@ private fun WindowList(onPick: () -> Unit) {
         }
         HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Palette.surface)
         Row(Modifier.padding(horizontal = 12.dp)) {
+            TextButton(onClick = { Client.showNetworks = true; onPick() }) { Text("Switch network") }
             TextButton(onClick = { Client.submit("/reconnect"); onPick() }) { Text("Reconnect") }
             TextButton(onClick = { Client.quit() }) { Text("Quit", color = Palette.red) }
         }

@@ -42,7 +42,7 @@ class Buffer(name: String, val kind: Kind) {
 }
 
 const val SERVER = "SorceryNet"
-const val VERSION = "Sorcery for Android 1.0 — a custom SorceryNet client"
+const val VERSION = "Sorcery for Android 1.0 — a custom IRC client"
 
 // RFC 2812-style nick: no dots or spaces, can't start with a digit or '-'.
 val NICK_RE = Regex("^[A-Za-z\\[\\]\\\\`_^{|}][A-Za-z0-9\\[\\]\\\\`_^{|}-]{0,29}$")
@@ -57,6 +57,7 @@ val HELP = listOf(
     "  /msg nick text · /query nick · /me action · /notice nick text",
     "  /nick NewNick · /topic [text] · /whois nick · /names · /list [*filter*]",
     "  /ns … /cs … /ms …  — NickServ, ChanServ, MemoServ",
+    "  /networks — pick another IRC network · /server host[:port] — any server",
     "  /reconnect · /clear · /quit [message] · /quote RAW",
     "Registered nicks",
     "  If it's yours:  /ns IDENTIFY <password>",
@@ -71,7 +72,7 @@ fun isChannel(name: String) = name.isNotEmpty() && name[0] in "#&+!"
 object Client {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val outbox = Channel<String>(Channel.UNLIMITED)
-    private var conn = IrcConnection()
+    private var conn = IrcConnection(NETWORKS[0])
     private var job: Job? = null
     private var quitting = false
     private lateinit var prefs: android.content.SharedPreferences
@@ -82,26 +83,42 @@ object Client {
     var registered by mutableStateOf(false)
     var connecting by mutableStateOf(false)
     var started by mutableStateOf(false)
-    var serverName by mutableStateOf(HOST)
+    var network by mutableStateOf(NETWORKS[0])
+    var serverName by mutableStateOf(NETWORKS[0].host)
+    var showNetworks by mutableStateOf(false) // the UI shows the network picker when set
     val buffers = mutableStateListOf(Buffer(SERVER, Kind.SERVER))
     var activeKey by mutableStateOf(SERVER.lowercase())
 
     val active: Buffer get() = find(activeKey) ?: buffers.first()
+    private val server: String get() = buffers.first().name
 
     fun init(context: Context) {
         if (::prefs.isInitialized) return
         prefs = context.getSharedPreferences("sorcery", Context.MODE_PRIVATE)
         nick = prefs.getString("nick", "") ?: ""
+        network = networkFor(prefs.getString("network", "") ?: "") ?: NETWORKS[0]
+        buffers.first().name = network.name
+        activeKey = buffers.first().key
         scope.launch(Dispatchers.IO) {
             for (line in outbox) runCatching { conn.send(line) }
         }
     }
 
+    /** A listed network by name or host, or a custom "host[:port]". */
+    fun networkFor(query: String): Network? {
+        if (query.isBlank()) return null
+        NETWORKS.firstOrNull { it.name.equals(query, true) || it.host.equals(query, true) }?.let { return it }
+        val host = query.substringBefore(':')
+        if (!host.contains('.')) return null
+        val port = query.substringAfter(':', "6697").toIntOrNull() ?: 6697
+        return Network(host, host, "Custom server", tls = port != 6667)
+    }
+
     private fun savedChannels(): List<String> =
-        prefs.getString("channels", "")!!.split(' ').filter { it.isNotBlank() }
+        prefs.getString("channels:${network.host}", "")!!.split(' ').filter { it.isNotBlank() }
 
     private fun rememberChannels() {
-        prefs.edit().putString("channels",
+        prefs.edit().putString("channels:${network.host}",
             buffers.filter { it.kind == Kind.CHANNEL && it.joined }.joinToString(" ") { it.name }).apply()
     }
 
@@ -159,38 +176,71 @@ object Client {
     fun connect() {
         job?.cancel()
         conn.close()
-        conn = IrcConnection()
+        conn = IrcConnection(network)
         quitting = false
         registered = false
         connecting = true
-        info(SERVER, "Connecting to $HOST:$PORT (TLS)…")
+        info(server, "Connecting to ${network.host}:${network.port}" + if (network.tls) " (encrypted)…" else "…")
+        if (!network.tls) hint("⚠ ${network.name} has no working encryption — anything you type can be read in transit.", server)
         val c = conn
         job = scope.launch {
             try {
                 withContext(Dispatchers.IO) { c.connect() }
                 serverName = c.serverName
-                info(SERVER, "Connected to ${c.serverName}. Signing in as $nick…")
+                info(server, "Connected to ${c.serverName}. Signing in as $nick…")
                 send("NICK $nick")
                 send("USER $nick 0 * :$nick")
                 withContext(Dispatchers.IO) {
                     c.readLines { line ->
                         scope.launch {
+                            if (c !== conn) return@launch // a line from a connection we've since replaced
                             try {
                                 handle(parse(line))
                             } catch (e: Exception) {
-                                error("(couldn't handle: ${line.take(80)} — ${e.message})", SERVER)
+                                error("(couldn't handle: ${line.take(80)} — ${e.message})", server)
                             }
                         }
                     }
                 }
-                if (!quitting) error("Disconnected from SorceryNet. Type /reconnect to connect again.")
+                if (c === conn && !quitting) error("Disconnected from ${network.name}. Type /reconnect to connect again.")
             } catch (e: Exception) {
-                if (!quitting) error("Connection problem: ${e.message}. Type /reconnect to try again.", SERVER)
+                if (c === conn && !quitting && e !is kotlinx.coroutines.CancellationException) {
+                    error("Connection problem: ${e.message}. Type /reconnect to try again.", server)
+                }
             } finally {
-                registered = false
-                connecting = false
-                buffers.forEach { it.joined = false }
+                // Only the current connection may update the shared state.
+                if (c === conn) {
+                    registered = false
+                    connecting = false
+                    buffers.forEach { it.joined = false }
+                }
             }
+        }
+    }
+
+    /** Choose a network before connecting (nick screen). */
+    fun selectNetwork(to: Network) {
+        network = to
+        buffers.first().name = to.name
+        activeKey = buffers.first().key
+        prefs.edit().putString("network", to.host).apply()
+    }
+
+    /** Leave the current network and connect to another. Windows from the old one are closed. */
+    fun switchNetwork(to: Network) {
+        if (conn.connected) send("QUIT :switching networks")
+        quitting = true
+        val serverBuf = buffers.first()
+        buffers.retainAll { it === serverBuf }
+        serverBuf.lines.clear()
+        serverBuf.topic = ""
+        serverBuf.name = to.name
+        activeKey = serverBuf.key
+        network = to
+        prefs.edit().putString("network", to.host).apply()
+        scope.launch {
+            kotlinx.coroutines.delay(300) // let the QUIT go out first
+            connect()
         }
     }
 
@@ -212,24 +262,24 @@ object Client {
         val p = m.params
         when (m.command) {
             "PING" -> send("PONG :${m.text}")
-            "ERROR" -> error(m.text, SERVER)
+            "ERROR" -> error(m.text, server)
 
             "001" -> {
                 registered = true
                 connecting = false
                 nick = m.p(0)
                 prefs.edit().putString("nick", nick).apply() // only nicks the server accepted
-                add(SERVER, Line(stamp(), Style.HINT, "Welcome to SorceryNet, $nick. Type /help for commands."), false)
+                add(server, Line(stamp(), Style.HINT, "Welcome to ${network.name}, $nick. Type /help for commands."), false)
                 savedChannels().forEach { send("JOIN $it") }
             }
             "002", "003", "251", "252", "254", "255", "265", "266", "372", "375", "376", "422" ->
-                add(SERVER, Line(stamp(), Style.MOTD, stripFormatting(p.drop(1).joinToString(" "))), false)
+                add(server, Line(stamp(), Style.MOTD, stripFormatting(p.drop(1).joinToString(" "))), false)
             "433", "436" -> {
-                nickHelp("The nick '${m.p(1)}' is already in use.", if (registered) activeKey else SERVER.lowercase())
-                if (!registered) switchTo(SERVER.lowercase())
+                nickHelp("The nick '${m.p(1)}' is already in use.", if (registered) activeKey else server.lowercase())
+                if (!registered) switchTo(server.lowercase())
             }
             "432" -> nickHelp("'${m.p(1)}' isn't allowed as a nick. $NICK_RULES",
-                if (registered) activeKey else SERVER.lowercase())
+                if (registered) activeKey else server.lowercase())
             "437" -> nickHelp("'${m.p(1)}' is temporarily unavailable.")
             "332" -> {
                 val b = buffer(m.p(1), Kind.CHANNEL)
@@ -250,13 +300,14 @@ object Client {
                 }
             }
             "366" -> {}
-            "321" -> info(SERVER, "Channel list:")
+            "321" -> info(server, "Channel list:")
             "322" -> {
                 val topic = stripFormatting(m.p(3).replace(Regex("^\\[\\+[^]]*] ?"), ""))
                 if ("Fake channel for confusing spambots" in topic) return
-                add(SERVER, Line(stamp(), Style.MOTD, "${m.p(1)}  (${m.p(2)})  $topic"), false)
+                add(server, Line(stamp(), Style.MOTD, "${m.p(1)}  (${m.p(2)})  $topic"), false)
             }
-            "323" -> info(SERVER, "End of list. (SorceryNet only shows real channels after you've been connected ~2 minutes.)")
+            "323" -> info(server, "End of list." +
+                if (network.certDomain == "sorcery.net") " (SorceryNet only shows real channels after you've been connected ~2 minutes.)" else "")
             "311" -> whois("${m.p(1)} is ${m.p(2)}@${m.p(3)} (${m.text})")
             "317" -> whois("${m.p(1)} has been idle ${(m.p(2).toLongOrNull() ?: 0) / 60} min")
             "318", "369" -> whois("End of WHOIS")
@@ -330,7 +381,7 @@ object Client {
             }
             "INVITE" -> hint("${m.nick} invited you to ${m.text}.  Join with:  /join ${m.text}")
             else -> if (m.command.all { it.isDigit() }) {
-                add(SERVER, Line(stamp(), Style.MOTD, stripFormatting(p.drop(1).joinToString(" "))), false)
+                add(server, Line(stamp(), Style.MOTD, stripFormatting(p.drop(1).joinToString(" "))), false)
             }
         }
     }
@@ -368,7 +419,7 @@ object Client {
         val text = stripFormatting(m.text)
         when {
             sender.lowercase() in SERVICES -> {
-                add(if (registered) activeKey else SERVER, Line(stamp(), Style.NOTICE, text, sender), false)
+                add(if (registered) activeKey else server, Line(stamp(), Style.NOTICE, text, sender), false)
                 if (sender.equals("NickServ", true) &&
                     Regex("nickname is registered|is registered and protected", RegexOption.IGNORE_CASE).containsMatchIn(text)
                 ) {
@@ -376,7 +427,7 @@ object Client {
                     hint("   Otherwise choose another with:  /nick NewNick   (NickServ may rename you soon)")
                 }
             }
-            '!' !in m.prefix || !registered -> add(SERVER, Line(stamp(), Style.MOTD, text), false)
+            '!' !in m.prefix || !registered -> add(server, Line(stamp(), Style.MOTD, text), false)
             else -> {
                 val key = if (isChannel(m.p(0))) m.p(0) else activeKey
                 add(key, Line(stamp(), Style.NOTICE, text, sender, highlight = mentions(text)))
@@ -415,7 +466,12 @@ object Client {
             "help" -> HELP.forEach { add(activeKey, Line(stamp(), Style.WHOIS, it), false) }
             "clear" -> b.lines.clear()
             "quit", "exit" -> quit(arg)
-            "reconnect", "connect", "server" -> {
+            "server", "network", "networks" -> {
+                if (arg.isEmpty()) showNetworks = true
+                else networkFor(arg)?.let { switchNetwork(it) }
+                    ?: hint("Unknown network '$arg'. Use /networks to pick from the list, or /server host[:port].")
+            }
+            "reconnect", "connect" -> {
                 if (conn.connected) send("QUIT :reconnecting")
                 connect()
             }
@@ -488,7 +544,7 @@ object Client {
             "whois", "wi" -> send("WHOIS " + arg.ifEmpty { if (b.kind == Kind.QUERY) b.name else nick })
             "names" -> if (b.kind == Kind.CHANNEL) { b.users.clear(); send("NAMES ${b.name}") }
             "list" -> {
-                switchTo(SERVER.lowercase())
+                switchTo(server.lowercase())
                 send("LIST" + if (arg.isNotEmpty()) " $arg" else "")
             }
             "quote", "raw" -> {

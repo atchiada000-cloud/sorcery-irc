@@ -3,13 +3,62 @@ package com.kenobi.sorcery
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.security.cert.X509Certificate
+import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
-const val HOST = "irc.sorcery.net"
-const val PORT = 6697 // TLS
+/**
+ * An IRC network. [certDomain] is for networks whose servers present certificates
+ * for their own names rather than the round-robin host (SorceryNet's are
+ * circe.sorcery.net etc., not irc.sorcery.net).
+ */
+data class Network(
+    val name: String,
+    val host: String,
+    val description: String,
+    val users: Int? = null, // rough count seen on 2026-10-01
+    val tls: Boolean = true,
+    val certDomain: String? = null,
+) {
+    val port: Int get() = if (tls) 6697 else 6667
+}
+
+// Checked 2026-10-01: each one connected, its certificate verified (TLS ones) and it
+// let a client sign in. User counts are a snapshot from that day.
+val NETWORKS = listOf(
+    Network("SorceryNet", "irc.sorcery.net", "Fantasy, role-play and old friends — home", 356, certDomain = "sorcery.net"),
+    Network("Libera.Chat", "irc.libera.chat", "Free & open-source projects, tech", 31548),
+    Network("OFTC", "irc.oftc.net", "Open-source projects (Debian, Tor…)", 15224),
+    Network("Rizon", "irc.rizon.net", "Anime, gaming and general chat", 9263),
+    Network("freenode", "irc.freenode.net", "General chat (post-2021 freenode)", 6183),
+    Network("hackint", "irc.hackint.org", "Hackers, CCC and maker community", 4170),
+    Network("KampungChat", "irc.kampungchat.org", "Malaysian & Asian social chat", 1905),
+    Network("Abjects", "irc.abjects.net", "General chat", 1718),
+    Network("EsperNet", "irc.esper.net", "Gaming and Minecraft development", 1393),
+    Network("Snoonet", "irc.snoonet.org", "Reddit communities", 1130),
+    Network("tilde.chat", "irc.tilde.chat", "The tildeverse and small web", 738),
+    Network("PTnet", "irc.ptnet.org", "Portuguese-speaking chat", 607),
+    Network("Furnet", "irc.furnet.org", "Furry community", 552),
+    Network("AfterNET", "irc.afternet.org", "General chat", 324),
+    Network("SwiftIRC", "irc.swiftirc.net", "RuneScape and gaming", 292),
+    Network("PIRC", "irc.pirc.pl", "Polish chat", 262),
+    Network("DarkMyst", "irc.darkmyst.org", "Fantasy role-playing", 245),
+    Network("Ergo", "irc.ergo.chat", "The Ergo IRC server project", 197),
+    Network("SpotChat", "irc.spotchat.org", "General chat", 185),
+    Network("AnonOps", "irc.anonops.com", "Anonymous / activism chat", 117),
+    Network("ScoutLink", "irc.scoutlink.net", "Scouts and Guides worldwide", 85),
+    Network("Interlinked", "irc.interlinked.me", "Tech and general chat", 65),
+    Network("DALnet", "irc.dal.net", "Classic general chat, since 1994"),
+    // Classic networks without working TLS: plain text, readable by anyone on the path.
+    Network("EFnet", "irc.efnet.org", "The original IRC network (1990)", tls = false),
+    Network("IRCnet", "open.ircnet.net", "Classic European network", tls = false),
+    Network("Undernet", "irc.undernet.org", "Classic general chat", tls = false),
+    Network("QuakeNet", "irc.quakenet.org", "Gaming, esports", tls = false),
+)
 
 data class Message(val prefix: String, val command: String, val params: List<String>) {
     val nick: String get() = prefix.substringBefore('!')
@@ -44,26 +93,34 @@ fun parse(raw: String): Message {
 private val FORMATTING = Regex("\u0003(\\d{1,2}(,\\d{1,2})?)?|[\u0002\u000f\u0011\u0016\u001d\u001e\u001f]")
 fun stripFormatting(s: String): String = s.replace(FORMATTING, "")
 
-/** One TLS connection to SorceryNet. Blocking; call from Dispatchers.IO. */
-class IrcConnection {
-    private var socket: SSLSocket? = null
+/** One connection to an IRC network. Blocking; call from Dispatchers.IO. */
+class IrcConnection(private val network: Network) {
+    private var socket: Socket? = null
     private var out: OutputStream? = null
-    var serverName = HOST
+    var serverName = network.host
         private set
 
     fun connect() {
-        // The default factory checks the certificate chain but not the hostname.
-        // SorceryNet's servers present certs for their own names (circe.sorcery.net,
-        // ...), not the round-robin irc.sorcery.net, so the name is checked below.
-        val s = SSLSocketFactory.getDefault().createSocket(HOST, PORT) as SSLSocket
+        if (!network.tls) {
+            val s = Socket()
+            s.connect(InetSocketAddress(network.host, network.port), 15_000)
+            socket = s
+            out = s.outputStream
+            return
+        }
+        // The default factory checks the certificate chain but not the hostname,
+        // so the name is checked here.
+        val s = SSLSocketFactory.getDefault().createSocket(network.host, network.port) as SSLSocket
         s.startHandshake()
         val cert = s.session.peerCertificates.first() as X509Certificate
         val names = cert.subjectAlternativeNames.orEmpty().filter { it[0] == 2 }.map { it[1] as String }
-        if (names.none { it == "sorcery.net" || it.endsWith(".sorcery.net") }) {
+        val ok = HttpsURLConnection.getDefaultHostnameVerifier().verify(network.host, s.session) ||
+            network.certDomain?.let { d -> names.any { it == d || it.endsWith(".$d") } } == true
+        if (!ok) {
             s.close()
-            throw SSLException("server certificate is not for sorcery.net")
+            throw SSLException("the server's certificate isn't for ${network.host}")
         }
-        serverName = names.first()
+        serverName = names.firstOrNull { !it.startsWith("*") } ?: network.host
         socket = s
         out = s.outputStream
     }
