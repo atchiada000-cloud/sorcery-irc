@@ -357,6 +357,13 @@ private fun ChatScreen() {
                                 Text("${buffer.users.size}", color = Palette.fg)
                             }
                         }
+                        if (buffer.kind == Kind.QUERY) {
+                            TextButton(onClick = { Client.close(buffer) }) {
+                                Icon(Icons.Default.Close, "Close this private chat", tint = Palette.fg)
+                                Spacer(Modifier.width(6.dp))
+                                Text("Close", color = Palette.fg)
+                            }
+                        }
                     },
                 )
             },
