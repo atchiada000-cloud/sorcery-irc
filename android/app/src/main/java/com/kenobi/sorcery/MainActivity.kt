@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -431,6 +432,8 @@ private fun ChatScreen() {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun WindowList(onPick: () -> Unit) {
+    var closing by remember { mutableStateOf<Buffer?>(null) }
+    closing?.let { b -> CloseDialog(b, onDone = { closing = null }) }
     Column(Modifier.padding(vertical = 12.dp)) {
         Text("☾ ${Client.network.name}", Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             color = Palette.yellow, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
@@ -445,7 +448,10 @@ private fun WindowList(onPick: () -> Unit) {
                 Row(
                     Modifier.fillMaxWidth()
                         .background(if (selected) Palette.surface else Color.Transparent)
-                        .combinedClickable(onClick = { Client.switchTo(b.key); onPick() })
+                        .combinedClickable(
+                            onClick = { Client.switchTo(b.key); onPick() },
+                            onLongClick = { closing = b },
+                        )
                         .padding(start = 20.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -478,6 +484,30 @@ private fun WindowList(onPick: () -> Unit) {
             TextButton(onClick = { Client.quit() }) { Text("Quit", color = Palette.red) }
         }
     }
+}
+
+/** Long-press on a window: leave a channel, close a private chat, or disconnect from the network. */
+@Composable
+private fun CloseDialog(b: Buffer, onDone: () -> Unit) {
+    val (title, body, action) = when (b.kind) {
+        Kind.CHANNEL -> Triple("Leave ${b.name}?", "You'll part the channel and its window will close.", "Leave")
+        Kind.QUERY -> Triple("Close chat with ${b.name}?", "It reopens if they message you again.", "Close")
+        Kind.SERVER -> Triple("Disconnect from ${Client.network.name}?",
+            "You'll leave every channel on this network and go back to the start screen.", "Disconnect")
+    }
+    AlertDialog(
+        onDismissRequest = onDone,
+        containerColor = Palette.panel,
+        title = { Text(title, color = Palette.fg) },
+        text = { Text(body, color = Palette.dim) },
+        confirmButton = {
+            TextButton(onClick = {
+                if (b.kind == Kind.SERVER) Client.quit() else Client.close(b)
+                onDone()
+            }) { Text(action, color = Palette.red) }
+        },
+        dismissButton = { TextButton(onClick = onDone) { Text("Cancel") } },
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
