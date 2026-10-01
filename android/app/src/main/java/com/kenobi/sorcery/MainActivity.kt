@@ -107,6 +107,34 @@ private object Palette {
 
 private fun nickColour(nick: String) = Palette.nicks[Math.floorMod(nick.lowercase().hashCode(), Palette.nicks.size)]
 
+private data class Cmd(val template: String, val description: String, val section: String)
+
+private val COMMANDS = listOf(
+    Cmd("/join #", "Join a channel", "Channels"),
+    Cmd("/part ", "Leave this channel (optional reason)", "Channels"),
+    Cmd("/topic ", "Show the topic, or type text to set it", "Channels"),
+    Cmd("/names", "Refresh the user list", "Channels"),
+    Cmd("/list", "List channels (works after ~2 min connected)", "Channels"),
+    Cmd("/close", "Close this window", "Channels"),
+    Cmd("/msg ", "Private message: /msg nick text", "People"),
+    Cmd("/query ", "Open a private chat with someone", "People"),
+    Cmd("/me ", "Do an action: * you waves", "People"),
+    Cmd("/notice ", "Send a notice: /notice nick text", "People"),
+    Cmd("/whois ", "Find out about someone", "People"),
+    Cmd("/nick ", "Change your nick", "You"),
+    Cmd("/ns IDENTIFY ", "Log in to your registered nick", "You"),
+    Cmd("/ns REGISTER ", "Register your nick: password email", "You"),
+    Cmd("/ms SEND ", "Leave a note for someone offline: nick message", "Services"),
+    Cmd("/ms LIST", "See notes left for you", "Services"),
+    Cmd("/ms READ ", "Read a note by number", "Services"),
+    Cmd("/ns INFO ", "Look up a registered nick", "Services"),
+    Cmd("/cs INFO #", "Look up a registered channel", "Services"),
+    Cmd("/reconnect", "Reconnect to SorceryNet", "Connection"),
+    Cmd("/clear", "Clear this window", "Connection"),
+    Cmd("/quit", "Leave SorceryNet", "Connection"),
+    Cmd("/help", "Show help in this window", "Connection"),
+)
+
 private val Mono = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, lineHeight = 20.sp)
 
 class MainActivity : ComponentActivity() {
@@ -207,6 +235,7 @@ private fun ChatScreen() {
     val scope = rememberCoroutineScope()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     var showUsers by remember { mutableStateOf(false) }
+    var showCommands by remember { mutableStateOf(false) }
     var input by remember { mutableStateOf(TextFieldValue("")) }
     val buffer = Client.active
 
@@ -281,6 +310,7 @@ private fun ChatScreen() {
                         Client.submit(input.text)
                         input = TextFieldValue("")
                     },
+                    onCommands = { showCommands = true },
                     onComplete = {
                         val t = input.text
                         val start = t.lastIndexOf(' ') + 1
@@ -294,6 +324,19 @@ private fun ChatScreen() {
                     },
                 )
             }
+        }
+    }
+
+    if (showCommands) {
+        ModalBottomSheet(onDismissRequest = { showCommands = false }, containerColor = Palette.panel) {
+            CommandList(onPick = { cmd ->
+                if (cmd.template.endsWith(" ") || cmd.template.endsWith("#")) {
+                    input = TextFieldValue(cmd.template, TextRange(cmd.template.length))
+                } else {
+                    Client.submit(cmd.template) // complete on its own, e.g. /names
+                }
+                showCommands = false
+            })
         }
     }
 
@@ -389,6 +432,35 @@ private fun UserList(buffer: Buffer, onOpen: (String) -> Unit, onInsert: (String
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun CommandList(onPick: (Cmd) -> Unit) {
+    Column(Modifier.padding(bottom = 24.dp)) {
+        Text("Commands", Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            color = Palette.yellow, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        Text("Tap one to use it — commands that need more go into the message box for you to finish.",
+            Modifier.padding(horizontal = 20.dp), color = Palette.dim, fontSize = 12.sp)
+        LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
+            COMMANDS.groupBy { it.section }.forEach { (section, cmds) ->
+                item(key = "h-$section") {
+                    Text(section.uppercase(), Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp),
+                        color = Palette.dim, fontSize = 11.sp, letterSpacing = 1.5.sp)
+                }
+                items(cmds, key = { it.template }) { cmd ->
+                    Row(
+                        Modifier.fillMaxWidth().combinedClickable(onClick = { onPick(cmd) })
+                            .padding(horizontal = 20.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(cmd.template.trimEnd(), Modifier.width(150.dp), style = Mono.copy(color = Palette.cyan))
+                        Text(cmd.description, color = Palette.fg, fontSize = 14.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun Messages(buffer: Buffer, modifier: Modifier) {
     val state = rememberLazyListState()
@@ -437,12 +509,14 @@ private fun InputBar(
     onChange: (TextFieldValue) -> Unit,
     placeholder: String,
     onSend: () -> Unit,
+    onCommands: () -> Unit,
     onComplete: () -> Unit,
 ) {
     Row(
         Modifier.fillMaxWidth().background(Palette.panel).padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        TextButton(onClick = onCommands) { Text("/", style = Mono.copy(fontSize = 20.sp, color = Palette.cyan, fontWeight = FontWeight.Bold)) }
         IconButton(onClick = onComplete) { Icon(Icons.Default.AlternateEmail, "Complete nick", tint = Palette.dim) }
         OutlinedTextField(
             value = value,
