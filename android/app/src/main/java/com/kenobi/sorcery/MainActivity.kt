@@ -88,22 +88,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
-// Tokyo Night, to match Omarchy's default theme.
+// Omarchy "Everforest" theme — values from ~/.local/state/omarchy/current/theme/colors.toml.
 private object Palette {
-    val bg = Color(0xFF1A1B26)
-    val panel = Color(0xFF16161E)
-    val surface = Color(0xFF24283B)
-    val fg = Color(0xFFC0CAF5)
-    val dim = Color(0xFF565F89)
-    val red = Color(0xFFF7768E)
-    val green = Color(0xFF9ECE6A)
-    val yellow = Color(0xFFE0AF68)
-    val blue = Color(0xFF7AA2F7)
-    val magenta = Color(0xFFBB9AF7)
-    val cyan = Color(0xFF7DCFFF)
-    val orange = Color(0xFFFF9E64)
-    val teal = Color(0xFF73DACA)
-    val nicks = listOf(red, green, yellow, blue, magenta, cyan, orange, teal, Color(0xFF2AC3DE), Color(0xFFB4F9F8))
+    val bg = Color(0xFF2D353B)      // background
+    val panel = Color(0xFF21272C)   // dark_background
+    val surface = Color(0xFF343F44) // lighter_background
+    val fg = Color(0xFFD3C6AA)      // foreground
+    val dim = Color(0xFF9DA9A0)     // light_foreground
+    val red = Color(0xFFE67E80)
+    val green = Color(0xFFA7C080)
+    val yellow = Color(0xFFDBBC7F)
+    val blue = Color(0xFF7FBBB3)    // also the theme accent
+    val magenta = Color(0xFFD699B6)
+    val cyan = Color(0xFF83C092)
+    val orange = Color(0xFFE09D7F)
+    val nicks = listOf(red, green, yellow, blue, magenta, cyan, orange)
 }
 
 private fun nickColour(nick: String) = Palette.nicks[Math.floorMod(nick.lowercase().hashCode(), Palette.nicks.size)]
