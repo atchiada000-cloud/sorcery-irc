@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import re
 import ssl
 import time
 import zlib
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from rich.text import Text
 from textual import events, work
@@ -19,24 +17,14 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
+from .core import NICK_RE, NICK_RULES, RANKS, SERVER, SERVICES, is_channel, load_config, save_config
 from .irc import HOST, PORT, Connection, Message, parse, strip_formatting
 
-CONFIG = Path.home() / ".config" / "sorcery-irc" / "config.json"
-SERVER = "SorceryNet"
 VERSION = "Sorcery 0.1 — a custom SorceryNet client"
 
-# RFC 2812-style nick: a letter or special first, then letters, digits,
-# specials or '-'. No dots or spaces.
-NICK_RE = re.compile(r"^[A-Za-z\[\]\\`_^{|}][A-Za-z0-9\[\]\\`_^{|}-]{0,29}$")
-NICK_RULES = (
-    "Nicks can use letters, numbers and [ ] \\ ` _ ^ { | } -, can't start with a "
-    "number or '-', and can't contain dots or spaces (max 30 characters)."
-)
 NICK_COLOURS = ["red", "green", "yellow", "blue", "magenta", "cyan",
                 "bright_red", "bright_green", "bright_yellow", "bright_blue",
                 "bright_magenta", "bright_cyan"]
-RANKS = {"~": 0, "&": 1, "@": 2, "%": 3, "+": 4}
-SERVICES = {"nickserv", "chanserv", "memoserv", "operserv", "hostserv", "botserv"}
 
 HELP = """\
 Commands
@@ -59,25 +47,6 @@ Registered nicks
 
 def nick_colour(nick: str) -> str:
     return NICK_COLOURS[zlib.crc32(nick.lower().encode()) % len(NICK_COLOURS)]
-
-
-def is_channel(name: str) -> bool:
-    return name[:1] in "#&+!"
-
-
-def load_config() -> dict:
-    try:
-        return json.loads(CONFIG.read_text())
-    except (OSError, ValueError):
-        return {}
-
-
-def save_config(cfg: dict) -> None:
-    try:
-        CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG.write_text(json.dumps(cfg, indent=2))
-    except OSError:
-        pass
 
 
 @dataclass
