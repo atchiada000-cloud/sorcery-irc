@@ -35,6 +35,7 @@ jobs:
       - name: Build
         run: >
           pyinstaller --noconfirm --windowed --name Sorcery
+          --paths .
           --icon sorcery_irc/assets/icon.png
           --add-data "sorcery_irc/assets:sorcery_irc/assets"
           --collect-data certifi
@@ -43,6 +44,7 @@ jobs:
 
       - name: Smoke test (Windows)
         if: runner.os == 'Windows'
+        timeout-minutes: 3
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
@@ -52,6 +54,7 @@ jobs:
 
       - name: Smoke test (macOS)
         if: runner.os == 'macOS'
+        timeout-minutes: 3
         env:
           QT_QPA_PLATFORM: offscreen
         run: dist/Sorcery.app/Contents/MacOS/Sorcery --smoke
