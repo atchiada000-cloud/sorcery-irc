@@ -55,7 +55,11 @@ def _tls_context() -> ssl.SSLContext:
     # SorceryNet's servers present certificates for their own names
     # (circe.sorcery.net, ...), not the round-robin irc.sorcery.net, so the
     # chain is verified normally and the hostname is checked by hand below.
-    ctx = ssl.create_default_context()
+    try:  # bundled CA list; python.org builds on macOS have none by default
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = ssl.create_default_context()
     ctx.check_hostname = False
     return ctx
 

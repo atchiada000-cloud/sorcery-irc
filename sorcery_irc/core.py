@@ -8,7 +8,9 @@ renders what the client produces (see `Frontend`).
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 import time
 import zlib
 from dataclasses import dataclass, field
@@ -17,7 +19,17 @@ from typing import Callable, Protocol
 
 from .irc import HOST, PORT, Message, parse, strip_formatting
 
-CONFIG = Path.home() / ".config" / "sorcery-irc" / "config.json"
+
+
+def _config_dir() -> Path:
+    if sys.platform == "win32":
+        return Path(os.environ.get("APPDATA") or Path.home()) / "Sorcery"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Sorcery"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "sorcery-irc"
+
+
+CONFIG = _config_dir() / "config.json"
 SERVER = "SorceryNet"
 VERSION = "Sorcery 0.2 — a custom SorceryNet client"
 

@@ -6,3 +6,6 @@ android/build/
 android/app/build/
 android/local.properties
 .kotlin/
+build/
+dist/
+*.spec
